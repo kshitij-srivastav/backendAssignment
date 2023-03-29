@@ -2,11 +2,20 @@ from flask import Flask, jsonify, request
 from threading import Lock
 from datetime import datetime, timedelta
 import celery
-
+import time
 app = Flask(__name__)
 store = {}
 expiry_store = {}
 lock = Lock()
+
+
+def key_valid(key):
+    if key not in store:
+        return False
+    if store[key]['expiry'] and time.time() > store[key]['expiry']:
+        del store[key]
+        return False
+    return True
 
 
 def set_value(key, value, expiry=None, condition=None):
