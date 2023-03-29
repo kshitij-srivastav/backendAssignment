@@ -1,25 +1,44 @@
-import celery
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify, request
 from threading import Lock
-import time
-
+from datetime import datetime, timedelta
+import celery
 
 app = Flask(__name__)
 store = {}
+expiry_store = {}
 lock = Lock()
 
-# Helper function to check if key exists and not expired
+
+def set_value(key, value, expiry=None, condition=None):
+    with lock:
+        if condition == "NX" and key in store:
+            return False
+        if condition == "XX" and key not in store:
+            return False
+        store[key] = value
+        if expiry:
+            expiry_time = datetime.now() + timedelta(seconds=expiry)
+            expiry_store[key] = expiry_time
+        return True
 
 
-def key_valid(key):
-    if key not in store:
-        return False
-    if store[key]['expiry'] and time.time() > store[key]['expiry']:
-        del store[key]
-        return False
-    return True
+def get_value(key):
+    with lock:
+        if key not in store:
+            return None
+        if key in expiry_store and expiry_store[key] < datetime.now():
+            del store[key]
+            del expiry_store[key]
+            return None
+        return store[key]
 
-# SET command implementation
+
+def push_value(key, values):
+    with lock:
+        if key not in store:
+            store[key] = []
+        store[key].extend(values)
+        return len(store[key])
 
 
 @app.route('/set', methods=['POST'])
@@ -52,17 +71,27 @@ def set_key_task(key, value, expiry, condition):
                     return {'success': True, 'message': 'Key set successfully.'}, 200
 
 
-# GET command implementation
+@app.route("/get", methods=["GET"])
+def get_handler():
+    key = request.args.get("key")
+    if not key:
+        return jsonify({"error": "Missing key"}), 400
+    value = get_value(key)
+    if value is None:
+        return jsonify({"error": "Key not found"}), 404
+    return jsonify({"result": value}), 200
 
 
-@app.route('/get/<key>', methods=['GET'])
-def get_key(key):
-    with lock:
-        if not key_valid(key):
-            return jsonify({'success': False, 'message': 'Key not found.'}), 404
-        else:
-            return jsonify({'success': True, 'value': store[key]['value']}), 200
+@app.route("/qpush", methods=["POST"])
+def qpush_handler():
+    data = request.get_json()
+    key = data.get("key")
+    values = data.get("values")
+    if not key or not values:
+        return jsonify({"error": "Missing key or values"}), 400
+    result = push_value(key, values)
+    return jsonify({"result": result}), 200
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     app.run(debug=True)
