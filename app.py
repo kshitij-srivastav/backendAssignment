@@ -1,6 +1,8 @@
+import celery
 from flask import Flask, request, jsonify
 from threading import Lock
 import time
+
 
 app = Flask(__name__)
 store = {}
@@ -27,15 +29,28 @@ def set_key():
     expiry = request.json.get('expiry', None)
     condition = request.json.get('condition', None)
 
-    with lock:
-        if condition == 'NX' and key_valid(key):
-            return jsonify({'success': False, 'message': 'Key already exists.'}), 409
-        elif condition == 'XX' and not key_valid(key):
-            return jsonify({'success': False, 'message': 'Key does not exist.'}), 404
-        else:
-            store[key] = {'value': value,
-                          'expiry': time.time() + expiry if expiry else None}
-            return jsonify({'success': True, 'message': 'Key set successfully.'}), 200
+    task = celery.send_task('tasks.set_key', args=[
+                            key, value, expiry, condition])
+    task.wait()
+
+    response = task.result
+    return jsonify(response)
+
+
+@celery.task(name='tasks.set_key')
+def set_key_task(key, value, expiry, condition):
+    with app.app_context():
+        with app.test_request_context():
+            with lock:
+                if condition == 'NX' and key_valid(key):
+                    return {'success': False, 'message': 'Key already exists.'}, 409
+                elif condition == 'XX' and not key_valid(key):
+                    return {'success': False, 'message': 'Key does not exist.'}, 404
+                else:
+                    store[key] = {'value': value,
+                                  'expiry': time.time() + expiry if expiry else None}
+                    return {'success': True, 'message': 'Key set successfully.'}, 200
+
 
 # GET command implementation
 
